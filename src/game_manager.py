@@ -20,6 +20,15 @@ class GameManager:
         self.mouse_y = 0
         self.hovered_btn = None
         
+        # Game mode selection ("AI" or "PVP")
+        self.game_mode = "AI"
+        
+        # Player Nicknames and active input text box state
+        self.p1_name = ""
+        self.p2_name = ""
+        self.active_input = None
+        self.game_over_time = None
+        
         # Game state engine
         self.game = TicTacToe()
         
@@ -56,27 +65,40 @@ class GameManager:
         if self.state == config.STATE_MENU:
             self.hovered_btn = check_button_hover(x, y)
             if event == cv2.EVENT_LBUTTONDOWN:
-                if self.hovered_btn == "START":
+                if self.hovered_btn == "PLAY_AI":
+                    self.game_mode = "AI"
+                    self.transition_to_game()
+                elif self.hovered_btn == "PLAY_FRIEND":
+                    self.game_mode = "PVP"
                     self.transition_to_game()
                 elif self.hovered_btn == "DIFFICULTY":
                     self._cycle_difficulty()
+                elif self.hovered_btn == "P1_NAME":
+                    self.active_input = "PLAYER1"
+                elif self.hovered_btn == "P2_NAME":
+                    self.active_input = "PLAYER2"
                 elif self.hovered_btn == "EXIT":
                     print("Exit button clicked.")
                     self.running = False
+                else:
+                    # Deselect name inputs if clicking elsewhere
+                    self.active_input = None
         
         elif self.state == config.STATE_GAME:
-            # Prevent manual moves if AI is thinking
+            # Check for game over button hovers and clicks only after delay has expired
             if self.game.game_over:
-                self.end_hovered_btn = check_end_button_hover(x, y)
-                if event == cv2.EVENT_LBUTTONDOWN:
-                    if self.end_hovered_btn == "PLAY":
-                        print("Mouse clicked Play Again.")
-                        self.game.reset()
-                        self.win_line_progress = 0.0
-                        self.end_hovered_btn = None
-                    elif self.end_hovered_btn == "MENU_BTN":
-                        print("Mouse clicked Main Menu.")
-                        self.transition_to_menu()
+                if self.game_over_time is not None and time.time() - self.game_over_time >= config.GAME_OVER_DELAY:
+                    self.end_hovered_btn = check_end_button_hover(x, y)
+                    if event == cv2.EVENT_LBUTTONDOWN:
+                        if self.end_hovered_btn == "PLAY":
+                            print("Mouse clicked Play Again.")
+                            self.game.reset()
+                            self.game_over_time = None
+                            self.win_line_progress = 0.0
+                            self.end_hovered_btn = None
+                        elif self.end_hovered_btn == "MENU_BTN":
+                            print("Mouse clicked Main Menu.")
+                            self.transition_to_menu()
 
     def _cycle_difficulty(self):
         """Cycles through difficulties: Easy -> Medium -> Hard."""
@@ -106,6 +128,7 @@ class GameManager:
         self.win_line_progress = 0.0
         self.end_hovered_btn = None
         self.ai_thinking = False
+        self.game_over_time = None
         
         # Instantiate Hand Detector
         print("Initializing MediaPipe Hand Landmarker...")
@@ -135,7 +158,7 @@ class GameManager:
         while self.running:
             if self.state == config.STATE_MENU:
                 # 1. Update and draw menu
-                draw_menu(menu_frame, self.hovered_btn, self.difficulty)
+                draw_menu(menu_frame, self.hovered_btn, self.difficulty, self.p1_name, self.p2_name, self.active_input)
                 
                 # Check for hand inputs in menu state
                 if self.detector is not None:
@@ -144,11 +167,28 @@ class GameManager:
                 
                 cv2.imshow(config.WINDOW_NAME, menu_frame)
                 
-                # 2. Key input: 'q' / 'Q' or Esc exits
-                key = cv2.waitKey(33) & 0xFF  # ~30 FPS limit on menu loop
-                if key == ord('q') or key == ord('Q') or key == 27:
-                    print("Quit key pressed in menu.")
-                    self.running = False
+                # 2. Key input:
+                key = cv2.waitKey(33)
+                if key != -1:
+                    ascii_key = key & 0xFF
+                    if self.active_input is not None:
+                        if ascii_key in (8, 127): # Backspace
+                            if self.active_input == "PLAYER1":
+                                self.p1_name = self.p1_name[:-1]
+                            elif self.active_input == "PLAYER2":
+                                self.p2_name = self.p2_name[:-1]
+                        elif ascii_key in (10, 13, 27): # Enter or Escape
+                            self.active_input = None
+                        elif 32 <= ascii_key <= 126: # Printable characters
+                            char = chr(ascii_key)
+                            if self.active_input == "PLAYER1" and len(self.p1_name) < 12:
+                                self.p1_name += char
+                            elif self.active_input == "PLAYER2" and len(self.p2_name) < 12:
+                                self.p2_name += char
+                    else:
+                        if ascii_key == ord('q') or ascii_key == ord('Q') or ascii_key == 27:
+                            print("Quit key pressed in menu.")
+                            self.running = False
 
             elif self.state == config.STATE_GAME:
                 # 1. Capture webcam frame
@@ -168,8 +208,8 @@ class GameManager:
                 # Get monotonically increasing timestamp in milliseconds
                 timestamp_ms = int(time.time() * 1000)
 
-                # 2. Handle AI Thinking State Machine (Automatic turn for O)
-                if not self.game.game_over and self.game.current_player == 'O':
+                # 2. Handle AI Thinking State Machine (Automatic turn for O in AI mode)
+                if self.game_mode == "AI" and not self.game.game_over and self.game.current_player == 'O':
                     if not self.ai_thinking:
                         # Initialize AI delay timer
                         self.ai_thinking = True
@@ -185,22 +225,29 @@ class GameManager:
                                 print(f"AI ({self.difficulty}) placed mark O at Row {r_ai}, Col {c_ai}")
                             self.ai_thinking = False
 
-                # 3. Increment winning line animation progress if win occurred
-                if self.game.game_over and self.game.winner in ('X', 'O'):
-                    if self.win_line_progress < 1.0:
-                        self.win_line_progress = min(1.0, self.win_line_progress + 0.05)
+                # 3. Track game over timestamp and increment winning line animation progress if win occurred
+                if self.game.game_over:
+                    if self.game_over_time is None:
+                        self.game_over_time = time.time()
+                    
+                    if self.game.winner in ('X', 'O'):
+                        if self.win_line_progress < 1.0:
+                            self.win_line_progress = min(1.0, self.win_line_progress + 0.05)
 
                 # 4. Detect hand, get interaction telemetry
-                telemetry = self.detector.process_interaction(frame, timestamp_ms, draw=True)
+                telemetry = self.detector.process_interaction(frame, timestamp_ms, game_mode=self.game_mode, draw=True)
 
                 # Active grid cell selection tracking
                 active_cell = None
                 
-                if telemetry is not None:
-                    cx, cy = telemetry["cx"], telemetry["cy"]
-                    
-                    # Lock input while game is over OR while AI is thinking
-                    if not self.game.game_over and not self.ai_thinking:
+                # Check for inputs
+                current_p = self.game.current_player
+                active_telemetry = telemetry.get(current_p) if (telemetry and current_p in telemetry) else None
+                
+                if not self.game.game_over and not self.ai_thinking:
+                    if active_telemetry is not None:
+                        cx, cy = active_telemetry["cx"], active_telemetry["cy"]
+                        
                         # 4a. Map cursor position to grid cell (row, col)
                         if (config.BOARD_X_START <= cx < config.BOARD_X_START + config.BOARD_SIZE) and \
                            (config.BOARD_Y_START <= cy < config.BOARD_Y_START + config.BOARD_SIZE):
@@ -212,44 +259,61 @@ class GameManager:
                             active_cell = (row, col)
                         
                         # 4b. Handle grid click triggers
-                        if telemetry["click_triggered"] and active_cell is not None:
+                        if active_telemetry["click_triggered"] and active_cell is not None:
                             success_move = self.game.make_move(row, col)
                             if success_move:
                                 print(f"Placed mark at Row {row}, Col {col}. Next turn: {self.game.current_player}")
                     
-                    elif self.game.game_over:
-                        # 4c. If game is over, map cursor position to game over buttons
-                        self.end_hovered_btn = check_end_button_hover(cx, cy)
-                        if telemetry["click_triggered"] and self.end_hovered_btn is not None:
-                            if self.end_hovered_btn == "PLAY":
-                                print("Pinch triggered Play Again.")
-                                self.game.reset()
-                                self.win_line_progress = 0.0
-                                self.end_hovered_btn = None
-                            elif self.end_hovered_btn == "MENU_BTN":
-                                print("Pinch triggered Main Menu.")
-                                self.transition_to_menu()
-                                continue
+                elif self.game.game_over:
+                    # If game is over and the delay has passed, allow either player to click the menu buttons
+                    if self.game_over_time is not None and time.time() - self.game_over_time >= config.GAME_OVER_DELAY:
+                        button_clicked = False
+                        for p in ['X', 'O']:
+                            p_tel = telemetry.get(p) if telemetry else None
+                            if p_tel is not None:
+                                cx, cy = p_tel["cx"], p_tel["cy"]
+                                self.end_hovered_btn = check_end_button_hover(cx, cy)
+                                if p_tel["click_triggered"] and self.end_hovered_btn is not None:
+                                    if self.end_hovered_btn == "PLAY":
+                                        print(f"Player {p} pinch triggered Play Again.")
+                                        self.game.reset()
+                                        self.game_over_time = None
+                                        self.win_line_progress = 0.0
+                                        self.end_hovered_btn = None
+                                        button_clicked = True
+                                        break
+                                    elif self.end_hovered_btn == "MENU_BTN":
+                                        print(f"Player {p} pinch triggered Main Menu.")
+                                        self.transition_to_menu()
+                                        button_clicked = True
+                                        break
+                        
+                        # Mouse fallback for game over buttons
+                        if not button_clicked:
+                            self.end_hovered_btn = check_end_button_hover(self.mouse_x, self.mouse_y)
 
-                    # Render passive/active cursor
-                    draw_cursor(frame, cx, cy, telemetry["is_pinched"])
+                # Render passive/active cursors for any detected hands
+                if telemetry is not None:
+                    for p, tel in telemetry.items():
+                        cursor_color = config.COLOR_X if p == 'X' else config.COLOR_O
+                        draw_cursor(frame, tel["cx"], tel["cy"], tel["is_pinched"], cursor_color)
                     
-                    # Package telemetry info for debugger panel
+                # Package telemetry info for debugger panel
+                if active_telemetry is not None:
                     debug_info = {
-                        "cx": cx,
-                        "cy": cy,
-                        "pinch_dist": telemetry["pinch_dist"],
-                        "pinch_state": "Pinching" if telemetry["is_pinched"] else "Open",
+                        "cx": active_telemetry["cx"],
+                        "cy": active_telemetry["cy"],
+                        "pinch_dist": active_telemetry["pinch_dist"],
+                        "pinch_state": "Pinching" if active_telemetry["is_pinched"] else "Open",
                         "row": active_cell[0] if active_cell else ("None" if not self.game.game_over and not self.ai_thinking else ("Thinking" if self.ai_thinking else "Frozen")),
                         "col": active_cell[1] if active_cell else ("None" if not self.game.game_over and not self.ai_thinking else ("Thinking" if self.ai_thinking else "Frozen")),
                         "player": self.game.current_player
                     }
                 else:
                     # Mouse coordinate hover mapping when hand is not in view
-                    if self.game.game_over:
+                    if self.game.game_over and self.game_over_time is not None and time.time() - self.game_over_time >= config.GAME_OVER_DELAY:
                         self.end_hovered_btn = check_end_button_hover(self.mouse_x, self.mouse_y)
 
-                    # Default values for empty debug panel
                     debug_info = {
                         "cx": "None",
                         "cy": "None",
@@ -261,10 +325,12 @@ class GameManager:
                     }
 
                 # 5. Render Board, Symbols, and active overlays
-                draw_board(frame, self.game.board, active_cell)
+                draw_board(frame, self.game.board, active_cell, self.game.winning_line)
 
                 # 6. Render score board win tallies
-                draw_scoreboard(frame, self.game.score)
+                p1_display = self.p1_name.strip() if self.p1_name.strip() != "" else "Player 1"
+                p2_display = self.p2_name.strip() if (self.p2_name.strip() != "" and self.game_mode == "PVP") else ("AI" if self.game_mode == "AI" else "Player 2")
+                draw_scoreboard(frame, self.game.score, p1_display, p2_display)
 
                 # 7. Draw winning path overlay line if a player aligned three
                 if self.game.game_over and self.game.winner in ('X', 'O'):
@@ -273,12 +339,17 @@ class GameManager:
                 # 8. Render debug panel
                 draw_debug_panel(frame, debug_info)
 
-                # 9. Render Game Over overlay screen card
-                if self.game.game_over:
-                    draw_game_over_overlay(frame, self.game.winner, self.end_hovered_btn)
+                # 9. Render Game Over overlay screen card (only after delay)
+                show_game_over = False
+                if self.game.game_over and self.game_over_time is not None:
+                    if time.time() - self.game_over_time >= config.GAME_OVER_DELAY:
+                        show_game_over = True
+                
+                if show_game_over:
+                    draw_game_over_overlay(frame, self.game.winner, p1_display, p2_display, self.end_hovered_btn)
 
                 # 10. Render game status text hud (turn indicator, handles "Computer Thinking...")
-                draw_hud(frame, self.game.current_player, self.game.winner, self.game.game_over, self.ai_thinking)
+                draw_hud(frame, self.game.current_player, p1_display, p2_display, self.game.winner, self.game.game_over, self.ai_thinking)
 
                 # 11. Calculate and render FPS
                 current_time = time.time()
@@ -294,7 +365,8 @@ class GameManager:
                 cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
 
                 # Draw game active subtitle text
-                hud_text = f"GAME ACTIVE | Mode: {self.difficulty} AI | R = Restart | ESC = Menu"
+                mode_str = "vs Friend" if self.game_mode == "PVP" else f"{self.difficulty} AI"
+                hud_text = f"GAME ACTIVE | Mode: {mode_str} | R = Restart | ESC = Menu"
                 (w, h), _ = cv2.getTextSize(hud_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
                 cv2.putText(
                     frame,
@@ -333,6 +405,7 @@ class GameManager:
                     self.win_line_progress = 0.0
                     self.end_hovered_btn = None
                     self.ai_thinking = False
+                    self.game_over_time = None
                 elif key == 27:  # ESC key
                     print("Shortcut 'ESC' pressed. Returning to menu...")
                     self.transition_to_menu()

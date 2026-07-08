@@ -6,11 +6,39 @@ import cv2
 import numpy as np
 import config
 
-def draw_board(img, board, active_cell=None):
+def draw_board(img, board, active_cell=None, winning_line=None):
     """
     Draws the Tic-Tac-Toe grid, symbols, and hover overlays.
     """
-    # 1. Draw Grid Lines
+    # 1. Highlight winning cells if any
+    if winning_line is not None:
+        line_type, idx = winning_line
+        winning_cells = []
+        if line_type == 'row':
+            winning_cells = [(idx, 0), (idx, 1), (idx, 2)]
+        elif line_type == 'col':
+            winning_cells = [(0, idx), (1, idx), (2, idx)]
+        elif line_type == 'diag':
+            if idx == 0:
+                winning_cells = [(0, 0), (1, 1), (2, 2)]
+            else:
+                winning_cells = [(0, 2), (1, 1), (2, 0)]
+        
+        for r, c in winning_cells:
+            x1 = config.BOARD_X_START + c * config.CELL_SIZE
+            y1 = config.BOARD_Y_START + r * config.CELL_SIZE
+            x2 = x1 + config.CELL_SIZE
+            y2 = y1 + config.CELL_SIZE
+            
+            # Subtle translucent green background overlay for winning cells
+            overlay = img.copy()
+            cv2.rectangle(overlay, (x1 + 6, y1 + 6), (x2 - 6, y2 - 6), (50, 205, 50), cv2.FILLED)
+            cv2.addWeighted(overlay, 0.15, img, 0.85, 0, img)
+            
+            # Green border
+            cv2.rectangle(img, (x1 + 6, y1 + 6), (x2 - 6, y2 - 6), (50, 205, 50), 3, cv2.LINE_AA)
+
+    # 2. Draw Grid Lines
     # Vertical grid lines
     cv2.line(
         img,
@@ -46,7 +74,7 @@ def draw_board(img, board, active_cell=None):
         cv2.LINE_AA
     )
 
-    # 2. Draw Hover Cell Overlay (only if game is not over)
+    # 3. Draw Hover Cell Overlay (only if game is not over)
     if active_cell is not None:
         row, col = active_cell
         x1 = config.BOARD_X_START + col * config.CELL_SIZE
@@ -58,7 +86,7 @@ def draw_board(img, board, active_cell=None):
         cv2.rectangle(overlay, (x1, y1), (x2, y2), config.COLOR_HOVER, cv2.FILLED)
         cv2.addWeighted(overlay, 0.2, img, 0.8, 0, img)
 
-    # 3. Draw Board Marks (X and O)
+    # 4. Draw Board Marks (X and O)
     for r in range(3):
         for c in range(3):
             mark = board[r][c]
@@ -77,53 +105,63 @@ def draw_board(img, board, active_cell=None):
                 radius = 42
                 cv2.circle(img, (cx, cy), radius, config.COLOR_O, 10, cv2.LINE_AA)
 
-def draw_hud(img, current_player, winner, game_over, ai_thinking=False):
+def draw_hud(img, current_player, p1_name="Player 1", p2_name="Player 2", winner=None, game_over=False, ai_thinking=False):
     """
     Draws game status texts, indicators, and buttons on the frame.
     """
-    # Draw Turn Indicator below the board if game is active
+    # Draw Turn/Winner Indicator below the board
     if not game_over:
         if ai_thinking:
-            turn_text = "Computer Thinking..."
+            turn_text = f"{p2_name} Thinking..."
             txt_color = config.COLOR_O
         else:
-            turn_text = f"Player Turn: {current_player}"
+            current_name = p1_name if current_player == 'X' else p2_name
+            turn_text = f"Turn: {current_name}"
             txt_color = config.COLOR_X if current_player == 'X' else config.COLOR_O
+    else:
+        if winner == 'Draw':
+            turn_text = "Game Draw!"
+            txt_color = (240, 240, 240)
+        else:
+            winner_name = p1_name if winner == 'X' else p2_name
+            turn_text = f"{winner_name} Wins!"
+            txt_color = config.COLOR_X if winner == 'X' else config.COLOR_O
 
-        (w, h), _ = cv2.getTextSize(turn_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
-        text_x = (config.WIDTH - w) // 2
-        text_y = config.BOARD_Y_START + config.BOARD_SIZE + 50
-        
-        # Outer capsule/bar background for turn text
-        bar_padding_x = 25
-        bar_padding_y = 10
-        cv2.rectangle(
-            img,
-            (text_x - bar_padding_x, text_y - h - bar_padding_y),
-            (text_x + w + bar_padding_x, text_y + bar_padding_y),
-            (18, 18, 18),
-            cv2.FILLED
-        )
-        cv2.rectangle(
-            img,
-            (text_x - bar_padding_x, text_y - h - bar_padding_y),
-            (text_x + w + bar_padding_x, text_y + bar_padding_y),
-            config.COLOR_GRID,
-            1
-        )
-        
-        cv2.putText(img, turn_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, txt_color, 2, cv2.LINE_AA)
+    (w, h), _ = cv2.getTextSize(turn_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+    text_x = (config.WIDTH - w) // 2
+    text_y = config.BOARD_Y_START + config.BOARD_SIZE + 50
+    
+    # Outer capsule/bar background for turn/winner text
+    bar_padding_x = 25
+    bar_padding_y = 10
+    cv2.rectangle(
+        img,
+        (text_x - bar_padding_x, text_y - h - bar_padding_y),
+        (text_x + w + bar_padding_x, text_y + bar_padding_y),
+        (18, 18, 18),
+        cv2.FILLED
+    )
+    cv2.rectangle(
+        img,
+        (text_x - bar_padding_x, text_y - h - bar_padding_y),
+        (text_x + w + bar_padding_x, text_y + bar_padding_y),
+        config.COLOR_GRID,
+        1
+    )
+    
+    cv2.putText(img, turn_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, txt_color, 2, cv2.LINE_AA)
 
-def draw_cursor(img, cx, cy, is_clicking=False):
+def draw_cursor(img, cx, cy, is_clicking=False, color=None):
     """
     Draws a visual cursor at the hand pointer coordinates.
     """
+    c = color if color is not None else config.COLOR_CURSOR
     if is_clicking:
         cv2.circle(img, (cx, cy), 8, config.COLOR_SELECTION, cv2.FILLED, cv2.LINE_AA)
         cv2.circle(img, (cx, cy), 16, config.COLOR_SELECTION, 2, cv2.LINE_AA)
     else:
-        cv2.circle(img, (cx, cy), 6, config.COLOR_CURSOR, cv2.FILLED, cv2.LINE_AA)
-        cv2.circle(img, (cx, cy), 14, config.COLOR_CURSOR, 2, cv2.LINE_AA)
+        cv2.circle(img, (cx, cy), 6, c, cv2.FILLED, cv2.LINE_AA)
+        cv2.circle(img, (cx, cy), 14, c, 2, cv2.LINE_AA)
 
 def draw_debug_panel(img, info):
     """
@@ -167,7 +205,7 @@ def draw_debug_panel(img, info):
         
         y_offset += line_height
 
-def draw_scoreboard(img, score):
+def draw_scoreboard(img, score, p1_name="Player 1", p2_name="Player 2"):
     """
     Draws a persistent scoreboard panel on the right side of the screen.
     """
@@ -187,8 +225,8 @@ def draw_scoreboard(img, score):
     cv2.line(img, (panel_x1 + 15, panel_y1 + 38), (panel_x2 - 15, panel_y1 + 38), config.COLOR_GRID, 1)
 
     # Score content
-    cv2.putText(img, f"Player X: {score['X']} wins", (panel_x1 + 15, panel_y1 + 75), font, 0.6, config.COLOR_X, 2, cv2.LINE_AA)
-    cv2.putText(img, f"Player O: {score['O']} wins", (panel_x1 + 15, panel_y1 + 120), font, 0.6, config.COLOR_O, 2, cv2.LINE_AA)
+    cv2.putText(img, f"{p1_name}: {score['X']} wins", (panel_x1 + 15, panel_y1 + 75), font, 0.6, config.COLOR_X, 2, cv2.LINE_AA)
+    cv2.putText(img, f"{p2_name}: {score['O']} wins", (panel_x1 + 15, panel_y1 + 120), font, 0.6, config.COLOR_O, 2, cv2.LINE_AA)
 
 def draw_winning_line(img, winning_line, progress):
     """
@@ -231,7 +269,7 @@ def draw_winning_line(img, winning_line, progress):
     # Draw gold indicator win line
     cv2.line(img, (x1, y1), (curr_x2, curr_y2), config.COLOR_WIN_LINE, 10, cv2.LINE_AA)
 
-def draw_game_over_overlay(img, winner, hovered_btn=None):
+def draw_game_over_overlay(img, winner, p1_name="Player 1", p2_name="Player 2", hovered_btn=None):
     """
     Draws the Game Over overlay card containing result message and action buttons.
     """
@@ -255,7 +293,8 @@ def draw_game_over_overlay(img, winner, hovered_btn=None):
         msg = "GAME DRAW!"
         color = (240, 240, 240)
     else:
-        msg = f"PLAYER {winner} WINS!"
+        winner_name = p1_name if winner == 'X' else p2_name
+        msg = f"{winner_name} Wins!".upper()
         color = config.COLOR_X if winner == 'X' else config.COLOR_O
 
     (w, h), _ = cv2.getTextSize(msg, font, 0.9, 2)

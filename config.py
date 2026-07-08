@@ -33,11 +33,19 @@ SMOOTHING_FACTOR = 0.3           # Exponential Moving Average weight (lower = sm
 STATE_MENU = "MENU"
 STATE_GAME = "GAME"
 
+# Game Over Delay
+GAME_OVER_DELAY = 2.5            # Delay in seconds before showing game over overlay
+
 # Welcome Screen Buttons
 # Format: [x_min, y_min, x_max, y_max]
-BTN_START_RECT = [490, 260, 790, 330]
-BTN_DIFFICULTY_RECT = [490, 360, 790, 430]
-BTN_EXIT_RECT = [490, 460, 790, 530]
+BTN_PLAY_AI_RECT = [150, 240, 550, 310]
+BTN_PLAY_FRIEND_RECT = [150, 340, 550, 410]
+BTN_DIFFICULTY_RECT = [150, 440, 550, 510]
+
+BTN_P1_NAME_RECT = [730, 240, 1130, 310]
+BTN_P2_NAME_RECT = [730, 340, 1130, 410]
+
+BTN_EXIT_RECT = [440, 560, 840, 630]
 
 # UI Colors (BGR format)
 COLOR_BTN_BG = (30, 30, 30)
