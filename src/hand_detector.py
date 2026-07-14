@@ -36,6 +36,10 @@ class HandDetector:
         # Gesture tracking state
         self.prev_pinched = {'X': False, 'O': False}
 
+        # Stable hand tracking coordinates (wrist x, y) and consecutive missing frame counts
+        self.track_wrist = {'X': None, 'O': None}
+        self.track_missing = {'X': 0, 'O': 0}
+
     def process_interaction(self, img, timestamp_ms, game_mode="AI", draw=True):
         """
         Runs hand tracking, overlays the skeleton overlay, smooths the index tip coordinates,
@@ -56,46 +60,129 @@ class HandDetector:
         
         telemetry = {}
 
+        # Check if we got any landmark results from MediaPipe
         if not self.results or not self.results.hand_landmarks:
-            # Reset filter and gesture states when no hands are present
+            # Reset filter and gesture states when no hands are present.
+            # Increment missing count for both players.
+            # Reset tracking coordinates and pinch history only after the hand has been missing for 30 frames.
             for p in ['X', 'O']:
                 self.smooth_x[p] = None
                 self.smooth_y[p] = None
-                self.prev_pinched[p] = False
+                self.track_missing[p] += 1
+                if self.track_missing[p] >= 30:
+                    self.track_wrist[p] = None
+                    self.prev_pinched[p] = False
             return telemetry
 
         h, w, c = img.shape
-        detected_hands = []
+        
+        # 1. Parse all detected hands and extract their wrist coordinates
+        detected_list = []
         for landmarks in self.results.hand_landmarks:
             wrist_x = landmarks[0].x * w
-            detected_hands.append((landmarks, wrist_x))
-        
-        # Sort hands by horizontal coordinate (left to right)
-        detected_hands.sort(key=lambda item: item[1])
-        
-        # Assign landmarks to player designations based on horizontal side and mode
+            wrist_y = landmarks[0].y * h
+            detected_list.append((landmarks, (wrist_x, wrist_y)))
+            
         player_hands = {}
+        
+        # 2. Assign landmarks based on the active game mode
         if game_mode == "AI":
-            # In Player vs AI, the human is Player X and controls the game using any single hand in view
-            if len(detected_hands) >= 1:
-                player_hands['X'] = detected_hands[0][0]
-        else: # "PVP"
-            if len(detected_hands) == 1:
-                landmarks, wrist_x = detected_hands[0]
-                if wrist_x < w // 2:
+            # Player vs AI: Track only player 'X' (the human). O (AI) never gets a hand.
+            if len(detected_list) > 0:
+                if self.track_wrist['X'] is not None:
+                    # Match the hand closest to X's last tracked wrist position to ignore brief accidental second hands
+                    tx, ty = self.track_wrist['X']
+                    best_hand = min(detected_list, key=lambda item: np.hypot(item[1][0] - tx, item[1][1] - ty))[0]
+                else:
+                    # Pick the first hand if no tracking has started yet
+                    best_hand = detected_list[0][0]
+                player_hands['X'] = best_hand
+                self.track_wrist['X'] = (best_hand[0].x * w, best_hand[0].y * h)
+                self.track_missing['X'] = 0
+            else:
+                self.track_missing['X'] += 1
+                if self.track_missing['X'] >= 30:
+                    self.track_wrist['X'] = None
+            
+            # AI (O) has no human hand; increment its missing count
+            self.track_missing['O'] += 1
+            if self.track_missing['O'] >= 30:
+                self.track_wrist['O'] = None
+                
+        else:  # PVP Mode
+            # Player 1 is X (default left screen), Player 2 is O (default right screen)
+            default_pos = {
+                'X': (w / 4.0, h / 2.0),
+                'O': (3.0 * w / 4.0, h / 2.0)
+            }
+            
+            # Determine reference positions (last known or fallback defaults)
+            ref_pos = {}
+            for p in ['X', 'O']:
+                if self.track_wrist[p] is not None:
+                    ref_pos[p] = self.track_wrist[p]
+                else:
+                    ref_pos[p] = default_pos[p]
+                    
+            if len(detected_list) == 1:
+                landmarks, pos = detected_list[0]
+                dist_x = np.hypot(pos[0] - ref_pos['X'][0], pos[1] - ref_pos['X'][1])
+                dist_o = np.hypot(pos[0] - ref_pos['O'][0], pos[1] - ref_pos['O'][1])
+                
+                # Assign to the player whose reference position is closer to the detected hand
+                if dist_x < dist_o:
                     player_hands['X'] = landmarks
+                    self.track_wrist['X'] = pos
+                    self.track_missing['X'] = 0
+                    
+                    self.track_missing['O'] += 1
+                    if self.track_missing['O'] >= 30:
+                        self.track_wrist['O'] = None
                 else:
                     player_hands['O'] = landmarks
-            elif len(detected_hands) >= 2:
-                player_hands['X'] = detected_hands[0][0]
-                player_hands['O'] = detected_hands[1][0]
+                    self.track_wrist['O'] = pos
+                    self.track_missing['O'] = 0
+                    
+                    self.track_missing['X'] += 1
+                    if self.track_missing['X'] >= 30:
+                        self.track_wrist['X'] = None
+                        
+            elif len(detected_list) >= 2:
+                # Two or more hands detected: match to X and O to minimize frame-to-frame movement cost
+                h1, pos1 = detected_list[0]
+                h2, pos2 = detected_list[1]
+                
+                # Cost Option A: h1 -> X, h2 -> O
+                cost_A = np.hypot(pos1[0] - ref_pos['X'][0], pos1[1] - ref_pos['X'][1]) + \
+                         np.hypot(pos2[0] - ref_pos['O'][0], pos2[1] - ref_pos['O'][1])
+                         
+                # Cost Option B: h2 -> X, h1 -> O
+                cost_B = np.hypot(pos2[0] - ref_pos['X'][0], pos2[1] - ref_pos['X'][1]) + \
+                         np.hypot(pos1[0] - ref_pos['O'][0], pos1[1] - ref_pos['O'][1])
+                         
+                if cost_A < cost_B:
+                    player_hands['X'] = h1
+                    player_hands['O'] = h2
+                    self.track_wrist['X'] = pos1
+                    self.track_wrist['O'] = pos2
+                else:
+                    player_hands['X'] = h2
+                    player_hands['O'] = h1
+                    self.track_wrist['X'] = pos2
+                    self.track_wrist['O'] = pos1
+                    
+                self.track_missing['X'] = 0
+                self.track_missing['O'] = 0
 
-        # Reset states for any players whose hands are not in view
+        # Reset smoothing filters for any hands not visible in this frame.
+        # Only reset the previous pinch state if the hand has been missing for 30 consecutive frames
+        # to ensure temporary frame detection drops do not trigger duplicate click events.
         for p in ['X', 'O']:
             if p not in player_hands:
                 self.smooth_x[p] = None
                 self.smooth_y[p] = None
-                self.prev_pinched[p] = False
+                if self.track_missing[p] >= 30:
+                    self.prev_pinched[p] = False
 
         # Process each active hand
         for p, landmarks in player_hands.items():
